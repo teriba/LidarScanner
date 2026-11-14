@@ -7,7 +7,6 @@ struct ModelViewer: View {
 
     @State private var scene: SCNScene?
     @State private var errorMessage: String?
-    @State private var showAR = false
 
     var body: some View {
         Group {
@@ -28,14 +27,11 @@ struct ModelViewer: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if scan.url.pathExtension == "usdz" {
-                Button { showAR = true } label: {
+                Button { ARQuickLook.present(scan.url) } label: {
                     Image(systemName: "arkit")
                 }
             }
             ShareLink(item: scan.url)
-        }
-        .fullScreenCover(isPresented: $showAR) {
-            QuickLookPreview(url: scan.url).ignoresSafeArea()
         }
         .task {
             do {
@@ -48,25 +44,27 @@ struct ModelViewer: View {
 }
 
 /// AR Quick Look: place a USDZ in the real world at true scale.
-private struct QuickLookPreview: UIViewControllerRepresentable {
-    let url: URL
-    @Environment(\.dismiss) private var dismiss
+/// Presented directly from UIKit so Quick Look shows its own close button. Wrapped in a
+/// SwiftUI cover, the AR view hides the navigation bar and there is no way back.
+@MainActor
+private enum ARQuickLook {
+    private static var dataSource: DataSource?
 
-    func makeUIViewController(context: Context) -> UINavigationController {
+    static func present(_ url: URL) {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        guard var top = scene?.keyWindow?.rootViewController else { return }
+        while let presented = top.presentedViewController { top = presented }
+
+        let source = DataSource(url: url)
+        dataSource = source
         let controller = QLPreviewController()
-        controller.dataSource = context.coordinator
-        controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            systemItem: .done,
-            primaryAction: UIAction { _ in dismiss() }
-        )
-        return UINavigationController(rootViewController: controller)
+        controller.dataSource = source
+        top.present(controller, animated: true)
     }
 
-    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
-
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+    private final class DataSource: NSObject, QLPreviewControllerDataSource {
         let url: URL
         init(url: URL) { self.url = url }
 

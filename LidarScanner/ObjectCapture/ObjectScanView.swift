@@ -40,21 +40,25 @@ final class ObjectCaptureModel {
         }
 
         let session = ObjectCaptureSession()
-        var configuration = ObjectCaptureSession.Configuration()
-        configuration.checkpointDirectory = checkpointDir
-        session.start(imagesDirectory: imagesDir, configuration: configuration)
-        self.session = session
-
+        // Subscribe before start, otherwise early state changes (like .ready) can be missed.
+        let stateUpdates = session.stateUpdates
+        let passUpdates = session.userCompletedScanPassUpdates
         Task { [weak self] in
-            for await state in session.stateUpdates {
+            for await state in stateUpdates {
                 self?.handle(state)
             }
         }
         Task { [weak self] in
-            for await completed in session.userCompletedScanPassUpdates {
+            for await completed in passUpdates {
                 self?.scanPassComplete = completed
             }
         }
+
+        var configuration = ObjectCaptureSession.Configuration()
+        configuration.checkpointDirectory = checkpointDir
+        session.start(imagesDirectory: imagesDir, configuration: configuration)
+        self.session = session
+        captureState = session.state
     }
 
     func startDetecting() { _ = session?.startDetecting() }

@@ -4,6 +4,7 @@ import SwiftUI
 
 /// Raw LiDAR scene reconstruction. Captures everything the sensor sees (rooms, outdoor
 /// spaces, large objects) as an untextured triangle mesh and exports it as OBJ.
+/// See MeshConversion for what can be done with the file afterwards.
 final class MeshScanController: NSObject, ObservableObject, ARSessionDelegate {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
@@ -17,7 +18,11 @@ final class MeshScanController: NSObject, ObservableObject, ARSessionDelegate {
 
     func start() {
         let configuration = ARWorldTrackingConfiguration()
-        configuration.sceneReconstruction = .mesh
+        // Classification labels each face as wall, floor, etc. The export keeps the labels,
+        // and the room and object conversions use them.
+        configuration.sceneReconstruction =
+            ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification)
+            ? .meshWithClassification : .mesh
         configuration.environmentTexturing = .none
         arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
     }

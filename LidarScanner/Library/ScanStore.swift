@@ -51,12 +51,32 @@ enum ScanKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Extensions listed in this kind's folder. Scans made by the app use `fileExtension`.
+    /// Rooms and objects converted from a raw mesh are OBJ.
+    var readableExtensions: Set<String> {
+        switch self {
+        case .object, .room: ["usdz", "obj"]
+        case .mesh: ["obj"]
+        }
+    }
+
     @MainActor
     var isSupported: Bool {
         switch self {
         case .object: ObjectCaptureSession.isSupported
         case .room: RoomCaptureSession.isSupported
         case .mesh: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        }
+    }
+}
+
+extension MeshConversion {
+    /// Section of the library the result is saved in.
+    var resultKind: ScanKind {
+        switch self {
+        case .cleanUp: .mesh
+        case .room: .room
+        case .object: .object
         }
     }
 }
@@ -90,10 +110,26 @@ final class ScanStore {
     }
 
     func newFileURL(for kind: ScanKind) -> URL {
+        newFileURL(for: kind, prefix: kind.title, fileExtension: kind.fileExtension)
+    }
+
+    private func newFileURL(for kind: ScanKind, prefix: String, fileExtension: String) -> URL {
         let folder = Self.folder(for: kind)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let name = "\(kind.title) \(Self.nameFormatter.string(from: .now))"
-        return folder.appending(path: name).appendingPathExtension(kind.fileExtension)
+        let name = "\(prefix) \(Self.nameFormatter.string(from: .now))"
+        return folder.appending(path: name).appendingPathExtension(fileExtension)
+    }
+
+    /// Where the result of a mesh conversion goes. Always a new file.
+    func newFileURL(forResultOf conversion: MeshConversion) -> URL {
+        newFileURL(for: conversion.resultKind, prefix: conversion.filePrefix, fileExtension: "obj")
+    }
+
+    /// Looks up a file that was just written, after a reload.
+    func scan(at url: URL) -> SavedScan? {
+        // Compared by folder and file name. Directory listings can spell the same path differently.
+        let folder = url.deletingLastPathComponent().lastPathComponent
+        return scans.first { $0.url.lastPathComponent == url.lastPathComponent && $0.kind.title == folder }
     }
 
     func reload() {
@@ -105,7 +141,7 @@ final class ScanStore {
                 includingPropertiesForKeys: keys,
                 options: .skipsHiddenFiles
             )) ?? []
-            for url in files where url.pathExtension.lowercased() == kind.fileExtension {
+            for url in files where kind.readableExtensions.contains(url.pathExtension.lowercased()) {
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 found.append(SavedScan(
                     url: url,

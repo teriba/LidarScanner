@@ -1,5 +1,4 @@
 import ARKit
-import ModelIO
 
 enum MeshExportError: LocalizedError {
     case noMesh
@@ -10,59 +9,62 @@ enum MeshExportError: LocalizedError {
 }
 
 enum MeshExporter {
-    /// Writes ARKit mesh anchors to a file (format from the URL extension, e.g. .obj).
+    /// Writes ARKit mesh anchors to one OBJ in world space. Faces are grouped by their
+    /// ARKit class (wall, floor, ...) when the session provides classification.
     static func export(_ anchors: [ARMeshAnchor], to url: URL) throws {
         guard !anchors.isEmpty else { throw MeshExportError.noMesh }
-        let allocator = MDLMeshBufferDataAllocator()
-        let asset = MDLAsset(bufferAllocator: allocator)
-        for anchor in anchors {
-            asset.add(mesh(for: anchor, allocator: allocator))
-        }
-        try asset.export(to: url)
+        var mesh = TriMesh()
+        for anchor in anchors { append(anchor, to: &mesh) }
+        guard mesh.triangleCount > 0 else { throw MeshExportError.noMesh }
+        try OBJFile.write(mesh, to: url)
     }
 
-    private static func mesh(for anchor: ARMeshAnchor, allocator: MDLMeshBufferAllocator) -> MDLMesh {
+    private static func append(_ anchor: ARMeshAnchor, to mesh: inout TriMesh) {
         let geometry = anchor.geometry
+        let baseVertex = UInt32(mesh.positions.count)
 
-        // Vertices are packed float3 in anchor space. Bake the anchor transform in so
-        // every chunk lands in a shared world space.
-        let source = geometry.vertices
-        let base = source.buffer.contents().advanced(by: source.offset)
-        var positions: [SIMD3<Float>] = []
-        positions.reserveCapacity(source.count)
-        for index in 0..<source.count {
-            let v = base.advanced(by: index * source.stride)
+        // Vertices and normals are packed float3 in anchor space. Bake the anchor
+        // transform in so every chunk lands in a shared world space.
+        let vertices = geometry.vertices
+        let normals = geometry.normals
+        let hasNormals = normals.count == vertices.count
+        let vertexBase = vertices.buffer.contents().advanced(by: vertices.offset)
+        let normalBase = normals.buffer.contents().advanced(by: normals.offset)
+        for index in 0..<vertices.count {
+            let v = vertexBase.advanced(by: index * vertices.stride)
                 .assumingMemoryBound(to: (Float, Float, Float).self).pointee
             let world = anchor.transform * SIMD4<Float>(v.0, v.1, v.2, 1)
-            positions.append(SIMD3(world.x, world.y, world.z))
+            mesh.positions.append(SIMD3(world.x, world.y, world.z))
+            var normal = SIMD3<Float>(0, 1, 0)
+            if hasNormals {
+                let n = normalBase.advanced(by: index * normals.stride)
+                    .assumingMemoryBound(to: (Float, Float, Float).self).pointee
+                let rotated = anchor.transform * SIMD4<Float>(n.0, n.1, n.2, 0)
+                normal = SIMD3(rotated.x, rotated.y, rotated.z)
+            }
+            mesh.normals.append(normal)
         }
 
         let faces = geometry.faces
-        let indexCount = faces.count * faces.indexCountPerPrimitive
-        let indexData = Data(bytes: faces.buffer.contents(), count: indexCount * faces.bytesPerIndex)
-        let indexType: MDLIndexBitDepth = faces.bytesPerIndex == 2 ? .uInt16 : .uInt32
-
-        let vertexData = positions.withUnsafeBufferPointer { Data(buffer: $0) }
-        let descriptor = MDLVertexDescriptor()
-        descriptor.attributes[0] = MDLVertexAttribute(
-            name: MDLVertexAttributePosition, format: .float3, offset: 0, bufferIndex: 0
-        )
-        descriptor.layouts[0] = MDLVertexBufferLayout(stride: MemoryLayout<SIMD3<Float>>.stride)
-
-        let submesh = MDLSubmesh(
-            indexBuffer: allocator.newBuffer(with: indexData, type: .index),
-            indexCount: indexCount,
-            indexType: indexType,
-            geometryType: .triangles,
-            material: nil
-        )
-        let mesh = MDLMesh(
-            vertexBuffer: allocator.newBuffer(with: vertexData, type: .vertex),
-            vertexCount: positions.count,
-            descriptor: descriptor,
-            submeshes: [submesh]
-        )
-        mesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.5)
-        return mesh
+        guard faces.primitiveType == .triangle else { return }
+        let indexBase = faces.buffer.contents()
+        let classification = geometry.classification
+        for face in 0..<faces.count {
+            for corner in 0..<3 {
+                let pointer = indexBase.advanced(by: (face * 3 + corner) * faces.bytesPerIndex)
+                let index = faces.bytesPerIndex == 2
+                    ? UInt32(pointer.assumingMemoryBound(to: UInt16.self).pointee)
+                    : pointer.assumingMemoryBound(to: UInt32.self).pointee
+                mesh.indices.append(baseVertex + index)
+            }
+            // One byte per face. Its values match MeshClass.
+            var faceClass: UInt8 = 0
+            if let classification, face < classification.count {
+                faceClass = classification.buffer.contents()
+                    .advanced(by: classification.offset + face * classification.stride)
+                    .assumingMemoryBound(to: UInt8.self).pointee
+            }
+            mesh.classes.append(faceClass < MeshClass.furniture.rawValue ? faceClass : 0)
+        }
     }
 }

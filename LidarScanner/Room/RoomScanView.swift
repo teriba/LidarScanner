@@ -2,9 +2,10 @@ import RoomPlan
 import SwiftUI
 
 /// Whole-room scan with RoomPlan. Exports a parametric USDZ: walls, doors, windows
-/// and furniture as clean labelled boxes.
+/// and furniture as clean labelled boxes, each coloured from the camera feed.
 final class RoomScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate {
     let captureView = RoomCaptureView(frame: .zero)
+    let recorder = RoomKeyframeRecorder()
 
     @Published private(set) var isScanning = false
     @Published private(set) var result: CapturedRoom?
@@ -22,11 +23,13 @@ final class RoomScanModel: NSObject, ObservableObject, RoomCaptureViewDelegate {
     func start() {
         guard !isScanning, result == nil else { return }
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
+        recorder.start(session: captureView.captureSession.arSession)
         isScanning = true
     }
 
     func stop() {
         guard isScanning else { return }
+        recorder.stop()
         captureView.captureSession.stop()
         isScanning = false
     }
@@ -56,6 +59,7 @@ struct RoomScanView: View {
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = RoomScanModel()
+    @State private var isSaving = false
 
     var body: some View {
         ZStack {
@@ -72,6 +76,10 @@ struct RoomScanView: View {
                     if model.isScanning {
                         Button("Done") { model.stop() }
                             .buttonStyle(.borderedProminent)
+                    } else if isSaving {
+                        ProgressView("Colouring")
+                            .padding(10)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                     } else if model.result != nil {
                         Button("Save") { save() }
                             .buttonStyle(.borderedProminent)
@@ -95,9 +103,20 @@ struct RoomScanView: View {
         guard let room = model.result else { return }
         do {
             try room.export(to: outputURL, exportOptions: .parametric)
-            dismiss()
         } catch {
             model.errorMessage = error.localizedDescription
+            return
+        }
+        let url = outputURL
+        let elements = RoomColorizer.elements(of: room)
+        let keyframes = model.recorder.keyframes
+        isSaving = true
+        Task {
+            // Colouring is best effort. If it fails the grey export stays.
+            _ = await Task.detached(priority: .userInitiated) {
+                try? RoomColorizer.colorize(usdzAt: url, elements: elements, keyframes: keyframes)
+            }.value
+            dismiss()
         }
     }
 }

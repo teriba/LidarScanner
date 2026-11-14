@@ -9,6 +9,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
     case object
     case room
     case mesh
+    case face
 
     var id: String { rawValue }
 
@@ -17,6 +18,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         case .object: "Object"
         case .room: "Room"
         case .mesh: "Mesh"
+        case .face: "Face"
         }
     }
 
@@ -25,6 +27,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         case .object: "Objects"
         case .room: "Rooms (floor plan model)"
         case .mesh: "Raw meshes"
+        case .face: "Faces"
         }
     }
 
@@ -33,6 +36,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         case .object: "Scan object"
         case .room: "Scan room"
         case .mesh: "Scan raw mesh"
+        case .face: "Scan face"
         }
     }
 
@@ -41,12 +45,13 @@ enum ScanKind: String, CaseIterable, Identifiable {
         case .object: "cube.transparent"
         case .room: "square.split.bottomrightquarter"
         case .mesh: "skew"
+        case .face: "face.smiling"
         }
     }
 
     var fileExtension: String {
         switch self {
-        case .object, .room: "usdz"
+        case .object, .room, .face: "usdz"
         case .mesh: "obj"
         }
     }
@@ -57,6 +62,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object, .room: ["usdz", "obj"]
         case .mesh: ["obj"]
+        case .face: ["usdz"]
         }
     }
 
@@ -66,6 +72,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         case .object: ObjectCaptureSession.isSupported
         case .room: RoomCaptureSession.isSupported
         case .mesh: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        case .face: ARFaceTrackingConfiguration.isSupported
         }
     }
 }

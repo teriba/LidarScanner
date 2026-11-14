@@ -26,7 +26,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No scans yet",
                         systemImage: "cube.transparent",
-                        description: Text("Tap + to scan an object or a room.")
+                        description: Text("Tap + to scan an object, a room or a face.")
                     )
                 }
             }
@@ -51,6 +51,7 @@ struct ContentView: View {
                 case .object: ObjectScanView(outputURL: store.newFileURL(for: .object))
                 case .room: RoomScanView(outputURL: store.newFileURL(for: .room))
                 case .mesh: MeshScanView(outputURL: store.newFileURL(for: .mesh))
+                case .face: FaceScanView(outputURL: store.newFileURL(for: .face))
                 }
             }
         }

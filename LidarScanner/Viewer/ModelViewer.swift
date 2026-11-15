@@ -13,6 +13,14 @@ struct ModelViewer: View {
     @State private var converted: SavedScan?
 
     var body: some View {
+        if scan.kind == .detailed, DetailedRoomPackage(model: scan.url).exists {
+            DetailedRoomEditor(scan: scan)
+        } else {
+            viewer
+        }
+    }
+
+    private var viewer: some View {
         Group {
             if let scene {
                 SceneView(scene: scene, options: [.allowsCameraControl, .autoenablesDefaultLighting])
@@ -141,7 +149,7 @@ private struct ConversionProgress: View {
 /// Presented directly from UIKit so Quick Look shows its own close button. Wrapped in a
 /// SwiftUI cover, the AR view hides the navigation bar and there is no way back.
 @MainActor
-private enum ARQuickLook {
+enum ARQuickLook {
     private static var dataSource: DataSource?
 
     static func present(_ url: URL) {

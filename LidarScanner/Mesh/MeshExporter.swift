@@ -12,11 +12,16 @@ enum MeshExporter {
     /// Writes ARKit mesh anchors to one OBJ in world space. Faces are grouped by their
     /// ARKit class (wall, floor, ...) when the session provides classification.
     static func export(_ anchors: [ARMeshAnchor], to url: URL) throws {
-        guard !anchors.isEmpty else { throw MeshExportError.noMesh }
-        var mesh = TriMesh()
-        for anchor in anchors { append(anchor, to: &mesh) }
+        let mesh = mesh(from: anchors)
         guard mesh.triangleCount > 0 else { throw MeshExportError.noMesh }
         try OBJFile.write(mesh, to: url)
+    }
+
+    /// All anchors as one mesh in world space, with face classes.
+    static func mesh(from anchors: [ARMeshAnchor]) -> TriMesh {
+        var mesh = TriMesh()
+        for anchor in anchors { append(anchor, to: &mesh) }
+        return mesh
     }
 
     private static func append(_ anchor: ARMeshAnchor, to mesh: inout TriMesh) {

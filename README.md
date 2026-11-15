@@ -6,6 +6,7 @@ SwiftUI iOS app (iOS 17+) that scans with the LiDAR sensor or the front TrueDept
 |---|---|---|
 | Object | `ObjectCaptureSession` + on-device `PhotogrammetrySession` | Textured USDZ |
 | Room | RoomPlan | Parametric USDZ (walls, doors, windows, furniture as boxes), one flat colour per part taken from the camera |
+| Detailed room | RoomPlan and ARKit scene reconstruction on one shared `ARSession` | USDZ with RoomPlan walls, floor, doors and windows, and the scanned mesh of each piece of furniture instead of a box, coloured from the camera |
 | Raw mesh | ARKit scene reconstruction | Untextured OBJ in world space, faces grouped by ARKit class (wall, floor, ...) |
 | Face | ARKit face tracking (front TrueDepth camera) | Textured USDZ of the face mesh at real size, texture projected from one camera image |
 
@@ -25,6 +26,34 @@ Room and object conversion use the ARKit face classes when the file has them. Ol
 
 The code is in `LidarScanner/Mesh/`: `MeshProcessing` (weld, components, decimation, hole filling), `MeshPlanes` (floor levels and wall planes), `MeshRoomBuilder`, `MeshObjectIsolator`, `OBJFile` and `MeshConversion` (the three pipelines). These files only need Foundation and simd, so they also compile on macOS for testing.
 
+## Detailed rooms
+
+A detailed room scan runs RoomPlan and the raw mesh in the same AR session, so both are in the same world space and need no alignment. RoomPlan starts the session without scene reconstruction. The app runs the same configuration again with the mesh turned on (`DetailedRoomScanView`).
+
+On save, `DetailedRoomBuilder` does this in the background:
+
+1. Exports the RoomPlan room, colours it like a normal room scan and removes the furniture boxes.
+2. Gives every raw mesh triangle to the furniture box it lies in (5 cm margin). Floor, ceiling, door and window faces, faces near the floor and faces lying on a RoomPlan wall are left out. Wall-class faces inside a box but away from the wall are kept, because ARKit also labels cabinet fronts as wall.
+3. Cleans and decimates each piece (at most 12k triangles) and colours its vertices from the camera keyframes, with the depth map hiding what was behind something else.
+4. Writes one USDZ. Every piece of furniture is a node named `<category>_<RoomPlan object UUID without dashes>`. A box with too little mesh inside stays a box.
+
+Colours are stored as a small texture with one texel per triangle, because AR Quick Look does not show vertex colours.
+
+Next to `<name>.usdz` there is a folder `<name>.detail` with the data for editing: `room.json` (the RoomPlan `CapturedRoom`), `mesh.obj` (the raw mesh with classes), `structure.usdz`, one mesh and texture per piece of furniture, and `manifest.json` with the edit state.
+
+### Editing
+
+Open a detailed room and tap a piece of furniture. The panel shows its category and size and lets you:
+
+- switch between the scan mesh and the plain box,
+- replace it with a saved object scan (USDZ). The object stands on the bottom of the box, centred on its footprint and turned like the box. It keeps its real size unless "Fit to box" is on. Rotate it in 90 degree steps and nudge it in 5 cm steps.
+
+The menu can also show the scanned detail that is in no box (lamps, plants, clutter). It is off by default because it is noisy.
+
+Save writes a new scan with its own `.detail` folder. The opened scan is never changed. Which object replaced which box, and how it is placed, is kept in `manifest.json`, so the saved room can be edited again. AR Quick Look and sharing use the saved file.
+
+The code is in `LidarScanner/Detailed/`. `DetailedGeometry` (box cropping, vertex colours, placement) and `DetailedRoomManifest` only need Foundation and simd. `DetailedRoomScene` only needs SceneKit and ImageIO.
+
 ## Run on a phone
 
 1. Open `LidarScanner.xcodeproj` in Xcode 16 or later.
@@ -35,6 +64,7 @@ The code is in `LidarScanner/Mesh/`: `MeshProcessing` (weld, components, decimat
 
 - Object: matte, textured objects work best. Avoid shiny, transparent or very thin things. Do a second pass after flipping the object to capture its underside.
 - Room: move slowly and point at the floor-wall edges. Tap Done when the outline is complete. Colours come from the camera, so look at every wall and piece of furniture in good light. Parts the camera never saw stay grey.
+- Detailed room: scan like a room, but also walk around the furniture and look at it from all sides. The status line shows how many mesh chunks have been captured. If it stays at zero, the mesh could not be turned on and furniture is saved as boxes.
 - Raw mesh: works for anything, including outdoors, but has no colours.
 - Face: needs a device with Face ID. Even light from the front, look straight at the camera and hold still for half a second after tapping Capture. The texture comes from a single front view, so the sides of the face are stretched.
 - Convert to room: scan the floor and the full height of every wall. If the walls do not close into a loop, the floor is built from the scanned floor area instead.

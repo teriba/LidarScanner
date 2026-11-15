@@ -3,26 +3,6 @@ import CoreImage
 import RoomPlan
 import SceneKit
 
-/// A downscaled camera frame with the pose it was taken from.
-struct RoomKeyframe: Sendable {
-    static let width = 256
-    static let height = 192
-
-    /// RGBA8, sRGB, `width * height * 4` bytes.
-    let pixels: [UInt8]
-    /// Depth in metres along the camera axis, row-major. Empty if the frame had no depth.
-    let depth: [Float]
-    let depthWidth: Int
-    let depthHeight: Int
-    /// Intrinsics scaled to the downscaled image.
-    let focal: SIMD2<Float>
-    let center: SIMD2<Float>
-    let cameraTransform: simd_float4x4
-    let worldToCamera: simd_float4x4
-
-    var position: SIMD3<Float> { cameraTransform.columns.3.xyz }
-}
-
 /// Polls the RoomPlan ARSession for keyframes while scanning. It polls instead of taking
 /// the session delegate, which RoomPlan may be using itself. Use from the main thread only.
 final class RoomKeyframeRecorder {
@@ -148,9 +128,6 @@ enum RoomColorizer {
     }
 
     private static let grid = 5
-    private static let depthRange: ClosedRange<Float> = 0.3...6
-    /// A point this far behind the measured depth counts as hidden.
-    private static let occlusionTolerance: Float = 0.12
     /// Largest centre plus size mismatch (metres) for pairing a USDZ node with an element.
     private static let matchTolerance: Float = 0.5
 
@@ -160,12 +137,21 @@ enum RoomColorizer {
             + room.objects.map { boxElement(transform: $0.transform, dimensions: $0.dimensions) }
     }
 
+    /// Flat sRGB colour per element. Nil for elements no keyframe saw.
+    static func colors(of elements: [Element], keyframes: [RoomKeyframe]) -> [SIMD3<Float>?] {
+        elements.map { color(of: $0, keyframes: keyframes) }
+    }
+
     /// Rewrites the USDZ at `url` with one material colour per element.
-    /// Returns how many nodes were coloured. The file is left alone if that is zero.
+    /// Nodes of the elements in `removed` are deleted instead (the detailed room
+    /// builds its own furniture). Returns how many nodes were coloured or deleted.
+    /// The file is left alone if that is zero.
     @discardableResult
-    static func colorize(usdzAt url: URL, elements: [Element], keyframes: [RoomKeyframe]) throws -> Int {
-        guard !elements.isEmpty, !keyframes.isEmpty else { return 0 }
-        let colors = elements.map { color(of: $0, keyframes: keyframes) }
+    static func colorize(
+        usdzAt url: URL, elements: [Element], keyframes: [RoomKeyframe], removing removed: Set<Int> = []
+    ) throws -> Int {
+        guard !elements.isEmpty, !keyframes.isEmpty || !removed.isEmpty else { return 0 }
+        let colors = colors(of: elements, keyframes: keyframes)
 
         let scene = try SCNScene(url: url)
         var nodes: [(node: SCNNode, center: SIMD3<Float>, diagonal: Float)] = []
@@ -180,7 +166,8 @@ enum RoomColorizer {
         // Pair nodes with elements by position and size, best pairs first.
         var pairs: [(score: Float, node: Int, element: Int)] = []
         for (nodeIndex, node) in nodes.enumerated() {
-            for (elementIndex, element) in elements.enumerated() where colors[elementIndex] != nil {
+            for (elementIndex, element) in elements.enumerated()
+            where colors[elementIndex] != nil || removed.contains(elementIndex) {
                 let score = simd_distance(node.center, element.center) + abs(node.diagonal - element.diagonal)
                 if score < matchTolerance {
                     pairs.append((score, nodeIndex, elementIndex))
@@ -193,6 +180,12 @@ enum RoomColorizer {
         var usedElements = Set<Int>()
         for pair in pairs where !usedNodes.contains(pair.node) && !usedElements.contains(pair.element) {
             let node = nodes[pair.node].node
+            if removed.contains(pair.element) {
+                usedNodes.insert(pair.node)
+                usedElements.insert(pair.element)
+                node.removeFromParentNode()
+                continue
+            }
             guard let color = colors[pair.element],
                   let geometry = node.geometry?.copy() as? SCNGeometry else { continue }
             usedNodes.insert(pair.node)
@@ -207,6 +200,20 @@ enum RoomColorizer {
             // Geometry and materials can be shared between nodes, so each node gets its own.
             geometry.materials = [material]
             node.geometry = geometry
+        }
+        if !removed.isEmpty {
+            // RoomPlan groups furniture under "Object_grp". Catches boxes the pairing missed.
+            for (index, entry) in nodes.enumerated() where !usedNodes.contains(index) {
+                var ancestor = entry.node.parent
+                while let current = ancestor {
+                    if current.name?.hasPrefix("Object") == true {
+                        entry.node.removeFromParentNode()
+                        usedNodes.insert(index)
+                        break
+                    }
+                    ancestor = current.parent
+                }
+            }
         }
         guard !usedNodes.isEmpty else { return 0 }
 
@@ -266,62 +273,14 @@ enum RoomColorizer {
     /// Median colour (sRGB, 0...1) of the points any keyframe saw. The median keeps
     /// posters, doors and furniture in front of a wall from tinting the whole wall.
     private static func color(of element: Element, keyframes: [RoomKeyframe]) -> SIMD3<Float>? {
-        let seen = element.points.compactMap { color(at: $0, keyframes: keyframes) }
+        let seen = element.points.compactMap {
+            KeyframeSampler.color(at: $0.position, normal: $0.normal, keyframes: keyframes)
+        }
         guard !seen.isEmpty else { return nil }
         var median = SIMD3<Float>()
         for channel in 0..<3 {
             median[channel] = seen.map { $0[channel] }.sorted()[seen.count / 2]
         }
-        return SIMD3(linearToSRGB(median.x), linearToSRGB(median.y), linearToSRGB(median.z))
+        return KeyframeSampler.linearToSRGB(median)
     }
-
-    /// Weighted mean (linear RGB) of the point over all keyframes that see it. Closer views weigh more.
-    private static func color(at point: SamplePoint, keyframes: [RoomKeyframe]) -> SIMD3<Float>? {
-        var sum = SIMD3<Float>()
-        var totalWeight: Float = 0
-        for keyframe in keyframes {
-            let camera = keyframe.worldToCamera * SIMD4<Float>(point.position, 1)
-            // The camera looks down -Z with +Y up. Image rows grow downwards.
-            let depth = -camera.z
-            guard depthRange.contains(depth) else { continue }
-            let x = keyframe.focal.x * camera.x / depth + keyframe.center.x
-            let y = -keyframe.focal.y * camera.y / depth + keyframe.center.y
-            guard x >= 1, y >= 1, x < Float(RoomKeyframe.width - 1), y < Float(RoomKeyframe.height - 1) else { continue }
-
-            if let normal = point.normal {
-                let toCamera = simd_normalize(keyframe.position - point.position)
-                guard simd_dot(normal, toCamera) > 0.2 else { continue }
-            }
-            if !keyframe.depth.isEmpty {
-                let dx = min(Int(x) * keyframe.depthWidth / RoomKeyframe.width, keyframe.depthWidth - 1)
-                let dy = min(Int(y) * keyframe.depthHeight / RoomKeyframe.height, keyframe.depthHeight - 1)
-                let measured = keyframe.depth[dy * keyframe.depthWidth + dx]
-                if measured.isFinite, measured > 0, measured < depth - occlusionTolerance { continue }
-            }
-
-            let offset = (Int(y) * RoomKeyframe.width + Int(x)) * 4
-            let weight = 1 / depth
-            sum += weight * SIMD3(
-                sRGBToLinear(keyframe.pixels[offset]),
-                sRGBToLinear(keyframe.pixels[offset + 1]),
-                sRGBToLinear(keyframe.pixels[offset + 2])
-            )
-            totalWeight += weight
-        }
-        return totalWeight > 0 ? sum / totalWeight : nil
-    }
-
-    private static func sRGBToLinear(_ byte: UInt8) -> Float {
-        let value = Float(byte) / 255
-        return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
-    }
-
-    private static func linearToSRGB(_ value: Float) -> Float {
-        let clamped = min(max(value, 0), 1)
-        return clamped <= 0.0031308 ? clamped * 12.92 : 1.055 * pow(clamped, 1 / 2.4) - 0.055
-    }
-}
-
-private extension SIMD4<Float> {
-    var xyz: SIMD3<Float> { SIMD3(x, y, z) }
 }

@@ -50,6 +50,7 @@ struct ContentView: View {
                 switch kind {
                 case .object: ObjectScanView(outputURL: store.newFileURL(for: .object))
                 case .room: RoomScanView(outputURL: store.newFileURL(for: .room))
+                case .detailed: DetailedRoomScanView(outputURL: store.newFileURL(for: .detailed))
                 case .mesh: MeshScanView(outputURL: store.newFileURL(for: .mesh))
                 case .face: FaceScanView(outputURL: store.newFileURL(for: .face))
                 }

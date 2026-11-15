@@ -8,6 +8,7 @@ import SwiftUI // ObjectCaptureSession lives in the RealityKit + SwiftUI overlay
 enum ScanKind: String, CaseIterable, Identifiable {
     case object
     case room
+    case detailed
     case mesh
     case face
 
@@ -17,6 +18,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object: "Object"
         case .room: "Room"
+        case .detailed: "Detailed room"
         case .mesh: "Mesh"
         case .face: "Face"
         }
@@ -26,6 +28,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object: "Objects"
         case .room: "Rooms (floor plan model)"
+        case .detailed: "Detailed rooms (floor plan with scanned furniture)"
         case .mesh: "Raw meshes"
         case .face: "Faces"
         }
@@ -35,6 +38,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object: "Scan object"
         case .room: "Scan room"
+        case .detailed: "Scan detailed room"
         case .mesh: "Scan raw mesh"
         case .face: "Scan face"
         }
@@ -44,6 +48,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object: "cube.transparent"
         case .room: "square.split.bottomrightquarter"
+        case .detailed: "sofa"
         case .mesh: "skew"
         case .face: "face.smiling"
         }
@@ -51,7 +56,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
 
     var fileExtension: String {
         switch self {
-        case .object, .room, .face: "usdz"
+        case .object, .room, .detailed, .face: "usdz"
         case .mesh: "obj"
         }
     }
@@ -62,7 +67,7 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object, .room: ["usdz", "obj"]
         case .mesh: ["obj"]
-        case .face: ["usdz"]
+        case .detailed, .face: ["usdz"]
         }
     }
 
@@ -71,6 +76,8 @@ enum ScanKind: String, CaseIterable, Identifiable {
         switch self {
         case .object: ObjectCaptureSession.isSupported
         case .room: RoomCaptureSession.isSupported
+        case .detailed:
+            RoomCaptureSession.isSupported && ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         case .mesh: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         case .face: ARFaceTrackingConfiguration.isSupported
         }
@@ -99,6 +106,7 @@ struct SavedScan: Identifiable, Hashable {
 }
 
 /// Saved scans live in Documents/Scans/<Kind>/, which is also visible in the Files app.
+/// A detailed room also has a `<name>.detail` folder next to its USDZ, see DetailedRoomPackage.
 @MainActor
 @Observable
 final class ScanStore {
@@ -132,6 +140,11 @@ final class ScanStore {
         newFileURL(for: conversion.resultKind, prefix: conversion.filePrefix, fileExtension: "obj")
     }
 
+    /// Where an edited detailed room goes. Always a new file.
+    func newEditedRoomURL() -> URL {
+        newFileURL(for: .detailed, prefix: "Detailed room edited", fileExtension: "usdz")
+    }
+
     /// Looks up a file that was just written, after a reload.
     func scan(at url: URL) -> SavedScan? {
         // Compared by folder and file name. Directory listings can spell the same path differently.
@@ -163,6 +176,9 @@ final class ScanStore {
 
     func delete(_ scan: SavedScan) {
         try? FileManager.default.removeItem(at: scan.url)
+        if scan.kind == .detailed {
+            try? FileManager.default.removeItem(at: DetailedRoomPackage(model: scan.url).folder)
+        }
         reload()
     }
 }
